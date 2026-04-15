@@ -70,8 +70,18 @@ async function sendFCMAndSave({ tokens, userIds, title, body, data, type, target
     const payload = {
       notification: { title, body },
       data: data || {},
-      android: { priority: 'high' },
-      apns: { payload: { aps: { contentAvailable: true } } },
+      android: {
+        priority: 'high',
+        ttl: 0, // اختراق السكون (Doze mode) للإرسال الفوري
+        notification: {
+          channelId: 'default', // إجبار ظهور الإشعار في القناة الرئيسية
+          sound: 'default'
+        }
+      },
+      apns: {
+        headers: { 'apns-priority': '10' }, // أولوية قصوى لآبل
+        payload: { aps: { contentAvailable: true, sound: 'default' } }
+      },
       tokens
     };
     const response = await admin.messaging().sendEachForMulticast(payload);
@@ -271,8 +281,15 @@ app.post('/api/broadcast', async (req, res) => {
       const response = await admin.messaging().sendEachForMulticast({
         notification: { title, body: message },
         data: { type: 'global_broadcast' },
-        android: { priority: 'high' },
-        apns: { payload: { aps: { contentAvailable: true } } },
+        android: {
+          priority: 'high',
+          ttl: 0,
+          notification: { channelId: 'default', sound: 'default' }
+        },
+        apns: {
+          headers: { 'apns-priority': '10' },
+          payload: { aps: { contentAvailable: true, sound: 'default' } }
+        },
         tokens
       });
       sent = response.successCount;
