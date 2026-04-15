@@ -70,6 +70,8 @@ async function sendFCMAndSave({ tokens, userIds, title, body, data, type, target
     const payload = {
       notification: { title, body },
       data: data || {},
+      android: { priority: 'high' },
+      apns: { payload: { aps: { contentAvailable: true } } },
       tokens
     };
     const response = await admin.messaging().sendEachForMulticast(payload);
@@ -269,6 +271,8 @@ app.post('/api/broadcast', async (req, res) => {
       const response = await admin.messaging().sendEachForMulticast({
         notification: { title, body: message },
         data: { type: 'global_broadcast' },
+        android: { priority: 'high' },
+        apns: { payload: { aps: { contentAvailable: true } } },
         tokens
       });
       sent = response.successCount;
