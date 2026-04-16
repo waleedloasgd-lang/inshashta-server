@@ -32,7 +32,7 @@ const db = admin.apps.length ? admin.firestore() : null;
 // ==========================================
 // HELPER: Save notification to Firestore
 // ==========================================
-async function saveNotification({ userId, title, body, type, targetId, senderName }) {
+async function saveNotification({ userId, title, body, type, targetId, senderName, senderAvatar }) {
   if (!db) return null;
   try {
     const notifRef = await db.collection('Notifications').add({
@@ -42,6 +42,7 @@ async function saveNotification({ userId, title, body, type, targetId, senderNam
       type: type || 'general',
       targetId: targetId || '',
       senderName: senderName || '',
+      senderAvatar: senderAvatar || '',
       read: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
@@ -54,9 +55,11 @@ async function saveNotification({ userId, title, body, type, targetId, senderNam
 }
 
 // ==========================================
-// HELPER: Send FCM and save notifications
+// HELPER: Send FCM (DATA-ONLY) and save notifications
+// Now sends data-only messages so native Android service
+// can build rich notifications with sender photo + reply action
 // ==========================================
-async function sendFCMAndSave({ tokens, userIds, title, body, data, type, targetId, senderName }) {
+async function sendFCMAndSave({ tokens, userIds, title, body, data, type, targetId, senderName, senderAvatar }) {
   const uniqueTokens = [...new Set(tokens || [])];
   const uniqueUserIds = [...new Set(userIds || [])];
 
@@ -68,22 +71,33 @@ async function sendFCMAndSave({ tokens, userIds, title, body, data, type, target
   let sent = 0;
   let saved = 0;
 
-  // Send FCM
+  // Send FCM - DATA ONLY (no notification key!)
+  // This ensures our custom MyFirebaseMessagingService handles display
   try {
     const payload = {
-      notification: { title, body },
-      data: data || {},
+      data: {
+        ...(data || {}),
+        title: title || '',
+        body: body || '',
+        senderName: senderName || '',
+        senderAvatar: senderAvatar || '',
+        type: type || 'general',
+        targetId: targetId || '',
+        timestamp: Date.now().toString()
+      },
       android: {
         priority: 'high',
         ttl: 0, // اختراق السكون (Doze mode) للإرسال الفوري
-        notification: {
-          channelId: 'default', // إجبار ظهور الإشعار في القناة الرئيسية
-          sound: 'default'
-        }
       },
       apns: {
-        headers: { 'apns-priority': '10' }, // أولوية قصوى لآبل
-        payload: { aps: { contentAvailable: true, sound: 'default' } }
+        headers: { 'apns-priority': '10' },
+        payload: {
+          aps: {
+            contentAvailable: true,
+            sound: 'default',
+            alert: { title, body }
+          }
+        }
       },
       tokens: uniqueTokens
     };
@@ -104,7 +118,7 @@ async function sendFCMAndSave({ tokens, userIds, title, body, data, type, target
   // Save to Firestore for each user
   if (uniqueUserIds && uniqueUserIds.length > 0) {
     for (const uid of uniqueUserIds) {
-      await saveNotification({ userId: uid, title, body, type, targetId, senderName });
+      await saveNotification({ userId: uid, title, body, type, targetId, senderName, senderAvatar });
       saved++;
     }
   }
@@ -117,11 +131,11 @@ async function sendFCMAndSave({ tokens, userIds, title, body, data, type, target
 // ==========================================
 
 // Health check
-app.get('/', (req, res) => res.json({ status: 'Server is running', version: '3.0.0' }));
-app.get('/api', (req, res) => res.json({ status: 'Server is running', version: '3.0.0' }));
+app.get('/', (req, res) => res.json({ status: 'Server is running', version: '4.0.0' }));
+app.get('/api', (req, res) => res.json({ status: 'Server is running', version: '4.0.0' }));
 
 // ==========================================
-// 1. Notify Message - Chat & DM notifications
+// 1. Notify Message - Chat, DM & Group notifications
 // ==========================================
 app.post('/api/notify-message', async (req, res) => {
   try {
@@ -131,11 +145,13 @@ app.post('/api/notify-message', async (req, res) => {
 
     console.log(`\n📨 Notify message: matchId=${matchId}, senderId=${senderId}`);
 
-    // Get sender name
+    // Get sender name & avatar
     const senderDoc = await db.collection('Users').doc(senderId).get();
     const senderName = senderDoc.exists ? senderDoc.data().name : 'User';
+    const senderAvatar = senderDoc.exists ? (senderDoc.data().avatarUrl || '') : '';
 
     const isDM = matchId.startsWith('dm_');
+    const isGroup = matchId.startsWith('group_');
     const tokens = [];
     const userIds = [];
     let chatName = '';
@@ -152,6 +168,22 @@ app.post('/api/notify-message', async (req, res) => {
         }
       }
       chatName = senderName;
+    } else if (isGroup) {
+      // Group Chat: get all members' tokens
+      const groupId = matchId.replace('group_', '');
+      const groupDoc = await db.collection('Groups').doc(groupId).get();
+      if (!groupDoc.exists) return res.json({ success: true, sent: 0, reason: 'Group not found' });
+      const groupData = groupDoc.data();
+      chatName = groupData.name || 'Group';
+
+      for (let memberId of (groupData.members || [])) {
+        if (memberId === senderId) continue;
+        const mDoc = await db.collection('Users').doc(memberId).get();
+        if (mDoc.exists && mDoc.data().fcmToken) {
+          tokens.push(mDoc.data().fcmToken);
+          userIds.push(memberId);
+        }
+      }
     } else {
       // Match Chat: get all players' tokens
       const matchDoc = await db.collection('Matches').doc(matchId).get();
@@ -171,16 +203,18 @@ app.post('/api/notify-message', async (req, res) => {
 
     const title = isDM ? senderName : `${chatName}`;
     const body = isDM ? (text || 'Sent a message') : `${senderName}: ${text || 'Sent a message'}`;
+    const msgType = isDM ? 'dm_message' : (isGroup ? 'group_message' : 'chat_message');
 
     const result = await sendFCMAndSave({
       tokens,
       userIds,
       title,
       body,
-      data: { matchId, type: isDM ? 'dm_message' : 'chat_message' },
-      type: isDM ? 'dm_message' : 'chat_message',
+      data: { matchId, type: msgType, chatName },
+      type: msgType,
       targetId: matchId,
-      senderName
+      senderName,
+      senderAvatar
     });
 
     res.json({ success: true, ...result });
@@ -201,9 +235,10 @@ app.post('/api/notify-join', async (req, res) => {
 
     console.log(`\n🤝 Notify join: matchId=${matchId}, userId=${userId}`);
 
-    // Get joiner name
+    // Get joiner name & avatar
     const userDoc = await db.collection('Users').doc(userId).get();
     const userName = userDoc.exists ? userDoc.data().name : 'Player';
+    const userAvatar = userDoc.exists ? (userDoc.data().avatarUrl || '') : '';
 
     // Get match info
     const matchDoc = await db.collection('Matches').doc(matchId).get();
@@ -235,7 +270,8 @@ app.post('/api/notify-join', async (req, res) => {
       data: { matchId, type: 'player_joined' },
       type: 'player_joined',
       targetId: matchId,
-      senderName: userName
+      senderName: userName,
+      senderAvatar: userAvatar
     });
 
     res.json({ success: true, ...result });
@@ -278,20 +314,25 @@ app.post('/api/broadcast', async (req, res) => {
 
     if (tokens.length === 0) return res.json({ success: true, sent: 0, saved: 1 });
 
-    // Send FCM (but don't save per-user since we have global)
+    // Send FCM data-only
     let sent = 0;
     try {
       const response = await admin.messaging().sendEachForMulticast({
-        notification: { title, body: message },
-        data: { type: 'global_broadcast' },
+        data: {
+          title,
+          body: message,
+          type: 'global_broadcast',
+          senderName: 'Admin',
+          senderAvatar: '',
+          timestamp: Date.now().toString()
+        },
         android: {
           priority: 'high',
           ttl: 0,
-          notification: { channelId: 'default', sound: 'default' }
         },
         apns: {
           headers: { 'apns-priority': '10' },
-          payload: { aps: { contentAvailable: true, sound: 'default' } }
+          payload: { aps: { contentAvailable: true, sound: 'default', alert: { title, body: message } } }
         },
         tokens
       });
@@ -309,7 +350,102 @@ app.post('/api/broadcast', async (req, res) => {
 });
 
 // ==========================================
-// 4. Mark notification as read
+// 4. Reply from Notification (inline reply)
+// ==========================================
+app.post('/api/reply-message', async (req, res) => {
+  try {
+    if (!db) return res.status(500).json({ error: 'DB not available' });
+    const { matchId, senderId, text } = req.body;
+    if (!matchId || !senderId || !text) {
+      return res.status(400).json({ error: 'matchId, senderId, and text required' });
+    }
+
+    console.log(`\n💬 Reply from notification: matchId=${matchId}, senderId=${senderId}`);
+
+    // Save the reply message to Firestore
+    await db.collection('Messages').add({
+      matchId,
+      senderId,
+      text,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Get sender info
+    const senderDoc = await db.collection('Users').doc(senderId).get();
+    const senderName = senderDoc.exists ? senderDoc.data().name : 'User';
+    const senderAvatar = senderDoc.exists ? (senderDoc.data().avatarUrl || '') : '';
+
+    // Now notify other participants
+    const isDM = matchId.startsWith('dm_');
+    const isGroup = matchId.startsWith('group_');
+    const tokens = [];
+    const userIds = [];
+    let chatName = '';
+
+    if (isDM) {
+      const parts = matchId.replace('dm_', '').split('_');
+      const otherUid = parts.find(p => p !== senderId);
+      if (otherUid) {
+        const otherDoc = await db.collection('Users').doc(otherUid).get();
+        if (otherDoc.exists && otherDoc.data().fcmToken) {
+          tokens.push(otherDoc.data().fcmToken);
+          userIds.push(otherUid);
+        }
+      }
+      chatName = senderName;
+    } else if (isGroup) {
+      const groupId = matchId.replace('group_', '');
+      const groupDoc = await db.collection('Groups').doc(groupId).get();
+      if (groupDoc.exists) {
+        const groupData = groupDoc.data();
+        chatName = groupData.name || 'Group';
+        for (let memberId of (groupData.members || [])) {
+          if (memberId === senderId) continue;
+          const mDoc = await db.collection('Users').doc(memberId).get();
+          if (mDoc.exists && mDoc.data().fcmToken) {
+            tokens.push(mDoc.data().fcmToken);
+            userIds.push(memberId);
+          }
+        }
+      }
+    } else {
+      const matchDoc = await db.collection('Matches').doc(matchId).get();
+      if (matchDoc.exists) {
+        const matchData = matchDoc.data();
+        chatName = matchData.name || 'Match';
+        for (let pid of (matchData.players || [])) {
+          if (pid === senderId) continue;
+          const pDoc = await db.collection('Users').doc(pid).get();
+          if (pDoc.exists && pDoc.data().fcmToken) {
+            tokens.push(pDoc.data().fcmToken);
+            userIds.push(pid);
+          }
+        }
+      }
+    }
+
+    const title = isDM ? senderName : chatName;
+    const body = isDM ? text : `${senderName}: ${text}`;
+    const msgType = isDM ? 'dm_message' : (isGroup ? 'group_message' : 'chat_message');
+
+    if (tokens.length > 0) {
+      await sendFCMAndSave({
+        tokens, userIds, title, body,
+        data: { matchId, type: msgType, chatName },
+        type: msgType, targetId: matchId,
+        senderName, senderAvatar
+      });
+    }
+
+    res.json({ success: true, message: 'Reply sent and saved' });
+  } catch (err) {
+    console.error('[Reply Message Error]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// 5. Mark notification as read
 // ==========================================
 app.post('/api/mark-read', async (req, res) => {
   try {
@@ -326,7 +462,7 @@ app.post('/api/mark-read', async (req, res) => {
 });
 
 // ==========================================
-// 5. Mark all notifications as read for user
+// 6. Mark all notifications as read for user
 // ==========================================
 app.post('/api/mark-all-read', async (req, res) => {
   try {
@@ -354,7 +490,7 @@ app.post('/api/mark-all-read', async (req, res) => {
 });
 
 // ==========================================
-// 6. Send single notification (test)
+// 7. Send single notification (test)
 // ==========================================
 app.post('/send-notification', async (req, res) => {
   try {
@@ -372,7 +508,7 @@ app.post('/send-notification', async (req, res) => {
 });
 
 // ==========================================
-// 7. Upload Image (JSON Base64 Mode)
+// 8. Upload Image (JSON Base64 Mode)
 // ==========================================
 app.post('/upload-image', async (req, res) => {
   try {
@@ -399,7 +535,7 @@ app.post('/upload-image', async (req, res) => {
 });
 
 // ==========================================
-// 8. Mute user
+// 9. Mute user
 // ==========================================
 app.post('/mute-user', async (req, res) => {
   try {
@@ -421,12 +557,12 @@ app.post('/mute-user', async (req, res) => {
 });
 
 // ==========================================
-// 9. Debug: Check server health
+// 10. Debug: Check server health
 // ==========================================
 app.get('/api/health', async (req, res) => {
   const health = {
     server: 'running',
-    version: '3.0.0',
+    version: '4.0.0',
     firebase: !!admin.apps.length,
     firestore: !!db,
     timestamp: new Date().toISOString()
