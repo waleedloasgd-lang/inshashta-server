@@ -377,6 +377,98 @@ app.post('/api/broadcast', async (req, res) => {
   }
 });
 
+// ==========================================
+// 4. Call Invite - Ring the user's phone via Notification Push
+// ==========================================
+app.post('/api/call-invite', async (req, res) => {
+  try {
+    if (!db) return res.status(500).json({ error: 'DB not available' });
+    const { matchId, callerId, type } = req.body;
+    if (!matchId || !callerId) return res.status(400).json({ error: 'matchId and callerId required' });
+
+    console.log(`\n📞 Call invite: matchId=${matchId}, callerId=${callerId}`);
+
+    const callerDoc = await db.collection('Users').doc(callerId).get();
+    const callerName = callerDoc.exists ? callerDoc.data().name : 'User';
+    const callerAvatar = callerDoc.exists ? (callerDoc.data().avatarUrl || '') : '';
+
+    const isDM = matchId.startsWith('dm_');
+    const isGroup = matchId.startsWith('group_');
+    const tokens = [];
+    const userIds = [];
+    
+    // Fetch target user(s) tokens based on conversation type
+    if (isDM) {
+      const parts = matchId.replace('dm_', '').split('_');
+      const otherUid = parts.find(p => p !== callerId);
+      if (otherUid) {
+        const otherDoc = await db.collection('Users').doc(otherUid).get();
+        if (otherDoc.exists && otherDoc.data().fcmToken) {
+          tokens.push(otherDoc.data().fcmToken);
+          userIds.push(otherUid);
+        }
+      }
+    } else if (isGroup) {
+      const groupDoc = await db.collection('Groups').doc(matchId.replace('group_', '')).get();
+      if (groupDoc.exists) {
+        const memberIds = (groupDoc.data().members || []).filter(id => id !== callerId);
+        // ... (similar batch token fetching as notify-message)
+        const refs = memberIds.slice(0, 100).map(id => db.collection('Users').doc(id));
+        if (refs.length > 0) {
+          const docs = await db.getAll(...refs);
+          docs.forEach(mDoc => {
+            if (mDoc.exists && mDoc.data().fcmToken) { tokens.push(mDoc.data().fcmToken); userIds.push(mDoc.id); }
+          });
+        }
+      }
+    } else {
+      const matchDoc = await db.collection('Matches').doc(matchId).get();
+      if (matchDoc.exists) {
+        const pIds = (matchDoc.data().players || []).filter(id => id !== callerId);
+        const refs = pIds.slice(0, 100).map(id => db.collection('Users').doc(id));
+        if (refs.length > 0) {
+          const docs = await db.getAll(...refs);
+          docs.forEach(pDoc => {
+            if (pDoc.exists && pDoc.data().fcmToken) { tokens.push(pDoc.data().fcmToken); userIds.push(pDoc.id); }
+          });
+        }
+      }
+    }
+
+    if (tokens.length === 0) return res.json({ success: true, sent: 0, reason: 'No tokens found' });
+
+    const title = `📞 مكالمة واردة من ${callerName}`;
+    const body = `اضغط للرد على المكالمة والانضمام`;
+
+    // 1- Send high-priority visible FCM notification to act like a ring
+    const response = await admin.messaging().sendEachForMulticast({
+      notification: { title, body }, // We use visible notification so it wakes the device and shows in tray
+      data: {
+        matchId,
+        type: 'call_invite',
+        senderName: callerName,
+        senderAvatar: callerAvatar
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: 'in_shashta_calls', // Special channel to trigger ringing sounds
+          sound: 'default' 
+        }
+      },
+      apns: {
+         payload: { aps: { sound: 'default', category: 'CALL_INVITE' } }
+      },
+      tokens
+    });
+
+    res.json({ success: true, sent: response.successCount });
+  } catch (err) {
+    console.error('[Call Invite Error]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // API Reply Message was removed since native inline reply has been disabled in Android notification
 
 // ==========================================
