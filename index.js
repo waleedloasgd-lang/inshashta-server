@@ -6,12 +6,17 @@ const axios = require('axios');
 const ImageKit = require('imagekit');
 require('dotenv').config();
 
-const imagekit = new ImageKit({
-  publicKey: process.env.IMAGEKIT_PUBLIC_KEY,
-  privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
-  urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT
-});
-
+let imagekit = null;
+try {
+  imagekit = new ImageKit({
+    publicKey: process.env.IMAGEKIT_PUBLIC_KEY || "public_HdSnCP/v/OzMEMISVsztsoZGqi0=",
+    privateKey: process.env.IMAGEKIT_PRIVATE_KEY || "private_pSOlbb0+klfxxnft/DlTZ84eWZo=",
+    urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT || "https://ik.imagekit.io/LEDO"
+  });
+  console.log('✅ ImageKit initialized.');
+} catch (e) {
+  console.error('❌ ImageKit init failed:', e.message);
+}
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -302,6 +307,9 @@ app.get('/api/warm', (req, res) => {
 // ==========================================
 app.get('/api/imagekit-auth', (req, res) => {
   try {
+    if (!imagekit) {
+      return res.status(500).json({ error: 'ImageKit is not configured. Missing environment variables.' });
+    }
     const result = imagekit.getAuthenticationParameters();
     res.json(result);
   } catch (error) {
