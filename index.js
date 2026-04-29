@@ -3,7 +3,14 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const axios = require('axios');
+const ImageKit = require('imagekit');
 require('dotenv').config();
+
+const imagekit = new ImageKit({
+  publicKey: process.env.IMAGEKIT_PUBLIC_KEY,
+  privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
+  urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT
+});
 
 const app = express();
 app.use(cors());
@@ -288,6 +295,19 @@ app.get('/api', (req, res) => res.json({ status: 'Server is running', version: '
 // Dedicated warm-up endpoint (called on app launch to prevent cold start delay)
 app.get('/api/warm', (req, res) => {
   res.json({ warm: true, ts: Date.now() });
+});
+
+// ==========================================
+// ImageKit.io Authentication Endpoint
+// ==========================================
+app.get('/api/imagekit-auth', (req, res) => {
+  try {
+    const result = imagekit.getAuthenticationParameters();
+    res.json(result);
+  } catch (error) {
+    console.error('ImageKit auth error:', error);
+    res.status(500).json({ error: 'Failed to generate auth parameters' });
+  }
 });
 
 // ==========================================
