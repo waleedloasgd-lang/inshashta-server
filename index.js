@@ -217,7 +217,7 @@ async function sendFCMAndSave({ tokens, userIds, title, body, data, type, target
       },
       android: {
         priority: 'high',
-        ttl: 0
+        ttl: 86400000
       },
       apns: {
         headers: { 'apns-priority': '10' },
@@ -519,7 +519,7 @@ app.post('/api/broadcast', async (req, res) => {
           },
           android: {
             priority: 'high',
-            ttl: 0,
+            ttl: 86400000,
           },
           apns: {
             headers: { 'apns-priority': '10' },
@@ -704,7 +704,7 @@ app.post('/api/delete-notification', async (req, res) => {
       },
       android: {
         priority: 'high',
-        ttl: 0,
+        ttl: 86400000,
       },
       tokens
     });
