@@ -4,6 +4,7 @@ const cors = require('cors');
 const multer = require('multer');
 const axios = require('axios');
 const ImageKit = require('imagekit');
+const crypto = require('crypto');
 require('dotenv').config();
 
 let imagekit = null;
@@ -300,6 +301,30 @@ app.get('/api', (req, res) => res.json({ status: 'Server is running', version: '
 // Dedicated warm-up endpoint (called on app launch to prevent cold start delay)
 app.get('/api/warm', (req, res) => {
   res.json({ warm: true, ts: Date.now() });
+});
+
+// ==========================================
+// Cloudinary Authentication Endpoint (Signed Uploads)
+// ==========================================
+app.get('/api/cloudinary-sign', (req, res) => {
+  try {
+    const timestamp = Math.round((new Date).getTime() / 1000);
+    const apiSecret = "7bmJ3dti_Hn_Byuf38Awgjk9D5c";
+    const apiKey = "566119222639312";
+    const cloudName = "dd07kmewo";
+    
+    const signature = crypto.createHash('sha1').update(`timestamp=${timestamp}${apiSecret}`).digest('hex');
+    
+    res.json({
+      signature,
+      timestamp,
+      apiKey,
+      cloudName
+    });
+  } catch (error) {
+    console.error('Cloudinary auth error:', error);
+    res.status(500).json({ error: 'Failed to generate auth parameters' });
+  }
 });
 
 // ==========================================
