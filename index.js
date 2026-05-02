@@ -65,8 +65,28 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
+// Clean up expired IPs from rateLimitMap every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, data] of rateLimitMap.entries()) {
+    if (now - data.startTime > RATE_LIMIT_WINDOW) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 5 * 60 * 1000);
+
+// ==========================================
+// 🛡️ ASYNC HANDLER (Try-Catch Wrapper)
+// ==========================================
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10 MB limit to prevent memory issues
+});
 
 // Initialize Firebase Admin
 try {
@@ -295,8 +315,8 @@ async function sendFCMAndSave({ tokens, userIds, title, body, data, type, target
 // ==========================================
 
 // Health check + warm-up endpoint (prevents Vercel cold start)
-app.get('/', (req, res) => res.json({ status: 'Server is running', version: '8.0.0', ts: Date.now() }));
-app.get('/api', (req, res) => res.json({ status: 'Server is running', version: '8.0.0', ts: Date.now() }));
+app.get('/', (req, res) => res.json({ status: 'Server is running', version: '9.2.0', ts: Date.now() }));
+app.get('/api', (req, res) => res.json({ status: 'Server is running', version: '9.2.0', ts: Date.now() }));
 
 // Dedicated warm-up endpoint (called on app launch to prevent cold start delay)
 app.get('/api/warm', (req, res) => {
@@ -708,7 +728,7 @@ app.get('/api/stats', (req, res) => {
   
   res.json({
     status: 'Running efficiently',
-    version: '8.0.0',
+    version: '9.2.0',
     uptime: process.uptime(),
     activeCacheEntries: CacheStore.size,
     rateLimiterActiveIPs: rateLimitMap.size,
@@ -960,7 +980,7 @@ app.post('/api/mediafire-direct', async (req, res) => {
 app.get('/api/health', async (req, res) => {
   const health = {
     server: 'running',
-    version: '5.0.0',
+    version: '9.2.0',
     firebase: !!admin.apps.length,
     firestore: !!db,
     timestamp: new Date().toISOString()
@@ -978,6 +998,14 @@ app.get('/api/health', async (req, res) => {
   }
 
   res.json(health);
+});
+
+// ==========================================
+// 🛑 GLOBAL ERROR HANDLER
+// ==========================================
+app.use((err, req, res, next) => {
+  console.error('[Global Error]', err.message);
+  res.status(500).json({ error: 'Internal Server Error', details: err.message });
 });
 
 const PORT = process.env.PORT || 3000;
