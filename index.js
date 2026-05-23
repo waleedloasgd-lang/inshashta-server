@@ -901,6 +901,47 @@ app.post('/api/reply-message', async (req, res) => {
 });
 
 // ==========================================
+// WebRTC: Notify Incoming Call
+// ==========================================
+app.post('/api/notify-call', async (req, res) => {
+  try {
+    if (!db) return res.status(500).json({ error: 'DB not available' });
+    const { callerId, calleeId, callId, callerName, callerAvatar } = req.body;
+    if (!callerId || !calleeId || !callId) {
+      return res.status(400).json({ error: 'callerId, calleeId, and callId required' });
+    }
+
+    console.log(`\n📞 Incoming Call: from ${callerId} to ${calleeId} (CallID: ${callId})`);
+
+    const calleeData = await getCachedUser(calleeId);
+    if (!calleeData || !calleeData.fcmToken) {
+       return res.json({ success: false, reason: 'Callee has no token' });
+    }
+
+    const title = 'مكالمة واردة';
+    const body = `مكالمة صوتية من ${callerName || 'شخص'}`;
+
+    // Send high-priority FCM Data Message to wake up the app
+    const result = await sendFCMAndSave({
+      tokens: [calleeData.fcmToken],
+      userIds: [calleeId],
+      title,
+      body,
+      data: { type: 'INCOMING_CALL', callId, callerId, callerName: callerName || '', callerAvatar: callerAvatar || '' },
+      type: 'INCOMING_CALL',
+      targetId: callerId,
+      senderName: callerName || '',
+      senderAvatar: callerAvatar || ''
+    });
+
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[Notify Call Error]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
 // ADMIN DASHBOARD: Server Stats
 // ==========================================
 app.get('/api/stats', (req, res) => {
